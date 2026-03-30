@@ -361,15 +361,19 @@ function buildRG(n, starCols) {
 // Flips border cells between adjacent regions to block alternative
 // solutions. Only moves that keep BOTH affected regions connected
 // are considered, so the resulting grid always has contiguous regions.
-function optimizedFix(rg, n, starCols) {
+function optimizedFix(rg, n, starCols, requireConnected) {
+  if (requireConnected === undefined) requireConnected = true;
+  var maxPasses = n >= 12 ? 3 : 5;
+  var maxIters  = n >= 12 ? 60 : 200;
+
   var allSols = findSols(rg, n, 30);
   var alts = allSols.filter(function(s) {
     return s.some(function(c, r) { return c !== starCols[r]; });
   });
   if (alts.length === 0) return countSol(rg, n, 2) === 1;
 
-  for (var pass = 0; pass < 5; pass++) {
-    for (var iter = 0; iter < 200; iter++) {
+  for (var pass = 0; pass < maxPasses; pass++) {
+    for (var iter = 0; iter < maxIters; iter++) {
       if (alts.length === 0) break;
 
       // Candidate cells: positions where any alt places its star
@@ -402,7 +406,7 @@ function optimizedFix(rg, n, starCols) {
         // Connectivity check: removing (r,c) from oldReg must not disconnect it.
         // If (r,c) has ≤1 same-region neighbor it's a leaf — always safe.
         // If it has 2+ neighbors, verify all are still mutually reachable without (r,c).
-        if (sameNbs.length > 1) {
+        if (requireConnected && sameNbs.length > 1) {
           var vis = new Set();
           var q = [sameNbs[0]];
           vis.add(sameNbs[0][0] * n + sameNbs[0][1]);
@@ -459,17 +463,31 @@ function optimizedFix(rg, n, starCols) {
 }
 
 // ─── PUZZLE GENERATION ──────────────────────────────────────
-// BFS to build initial region grid, then hill-climb to uniqueness.
-function generatePuzzle(n) {
-  for (var attempt = 0; attempt < 500; attempt++) {
-    var starCols = findStars(n);
-    if (!starCols) continue;
-    var rg = buildRG(n, starCols);
-    if (!rg) continue;
-    if (countSol(rg, n, 2) === 1 || optimizedFix(rg, n, starCols))
-      return { regionGrid: rg, solution: starCols };
+// Async: calls onDone({ regionGrid, solution }) on success, onDone(null) on failure.
+function generatePuzzle(n, onDone) {
+  var maxAttempts     = n >= 12 ? 8000 : 500;
+  var batchSize       = n >= 12 ? 6 : 50;
+  var requireConnected = n < 12;
+  var attempt = 0;
+
+  function runBatch() {
+    var end = Math.min(attempt + batchSize, maxAttempts);
+    for (; attempt < end; attempt++) {
+      var starCols = findStars(n);
+      if (!starCols) continue;
+      var rg = buildRG(n, starCols);
+      if (!rg) continue;
+      if (countSol(rg, n, 2) === 1 || optimizedFix(rg, n, starCols, requireConnected)) {
+        onDone({ regionGrid: rg, solution: starCols });
+        return;
+      }
+    }
+    if (attempt >= maxAttempts) { onDone(null); return; }
+    if (n >= 12) setStatus('Generating… (' + attempt + ' / ' + maxAttempts + ')');
+    setTimeout(runBatch, 0);
   }
-  return null;
+
+  setTimeout(runBatch, 0);
 }
 
 // ─── FIND A SOLUTION (for Solve button) ─────────────────────
@@ -727,12 +745,9 @@ function startGame(n) {
   document.getElementById('win-overlay').classList.remove('show');
   setStatus('Generating…');
 
-  // Use setTimeout so the status message renders before the blocking BFS
-  setTimeout(function() {
-    var result = generatePuzzle(n);
-
+  generatePuzzle(n, function(result) {
     if (!result) {
-      setStatus('Grid size too small for this puzzle (try 6×6 or larger).', 'err');
+      setStatus('Could not generate — try again.', 'err');
       return;
     }
 
@@ -747,7 +762,7 @@ function startGame(n) {
     buildGrid();
     renderGrid();
     setStatus('Tap once to mark · twice for a star');
-  }, 10);
+  });
 }
 
 function showSolution() {
