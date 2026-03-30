@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Starstruck</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px 16px 32px;
+      gap: 12px;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: 5px;
+      text-transform: uppercase;
+    }
+
+    .sub {
+      font-size: 0.75rem;
+      color: #475569;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    #status {
+      font-size: 0.9rem;
+      color: #64748b;
+      min-height: 20px;
+      text-align: center;
+    }
+
+    #status.err  { color: #ef4444; }
+    #status.win  { color: #22c55e; font-weight: 600; }
+
+    #grid {
+      display: grid;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+
+    .cell {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    .cell:hover { filter: brightness(1.1); }
+    .cell:active { filter: brightness(0.85); }
+
+    /* red ring on conflicting stars */
+    .cell.conflict::after {
+      content: '';
+      position: absolute;
+      inset: 2px;
+      border: 3px solid #ef4444;
+      border-radius: 2px;
+      pointer-events: none;
+    }
+
+    #controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    select, button {
+      padding: 8px 14px;
+      font-size: 0.85rem;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+    }
+
+    select {
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+    }
+
+    #btn-new  { background: #3b82f6; color: #fff; font-weight: 600; }
+    #btn-new:hover  { background: #2563eb; }
+    #btn-reset { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+    #btn-reset:hover { background: #273548; }
+    #btn-solve { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+    #btn-solve:hover { background: #273548; }
+
+    .legend {
+      font-size: 0.72rem;
+      color: #334155;
+      text-align: center;
+      line-height: 1.8;
+    }
+
+    #win-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+    #win-overlay.show { display: flex; }
+
+    #win-box {
+      background: #1e293b;
+      border-radius: 20px;
+      padding: 48px 56px;
+      text-align: center;
+      animation: pop 0.25s cubic-bezier(0.34,1.56,0.64,1);
+    }
+    @keyframes pop {
+      from { transform: scale(0.8); opacity: 0; }
+      to   { transform: scale(1);   opacity: 1; }
+    }
+    #win-box h2 { font-size: 2rem; margin-bottom: 8px; }
+    #win-box p  { color: #64748b; margin-bottom: 24px; }
+    #btn-next {
+      padding: 12px 32px;
+      font-size: 1rem;
+      font-weight: 600;
+      background: #3b82f6;
+      color: #fff;
+      border-radius: 10px;
+      border: none;
+      cursor: pointer;
+    }
+    #btn-next:hover { background: #2563eb; }
+  </style>
+</head>
+<body>
+
+<h1>★ Starstruck</h1>
+<div class="sub">One star per row · column · region · no two stars touching</div>
+
+<div id="status">Loading…</div>
+
+<div id="grid"></div>
+
+<div id="controls">
+  <select id="size-sel">
+    <option value="6">6 × 6</option>
+    <option value="8">8 × 8</option>
+    <option value="10" selected>10 × 10</option>
+    <option value="12">12 × 12</option>
+  </select>
+  <button id="btn-new">New Game</button>
+  <button id="btn-reset">Reset</button>
+  <button id="btn-solve">Solve</button>
+</div>
+
+<div class="legend">
+  Tap once → mark &nbsp;|&nbsp; Tap again → star &nbsp;|&nbsp; Tap again → clear
+</div>
+
+<div id="win-overlay">
+  <div id="win-box">
+    <h2>🎉 Solved!</h2>
+    <p>All stars placed correctly.</p>
+    <button id="btn-next">Next Puzzle</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ─── COLOURS ────────────────────────────────────────────────
+const COLORS = [
+  '#f4a4a4','#f4c97a','#a8d8a0','#7ec8e3',
+  '#c3a8e0','#f9b8d0','#9ed4c4','#b8c8f0',
+  '#f0d898','#b0d4a8','#e8b4c8','#a8c8e4',
+];
+
+// ─── UTILITIES ──────────────────────────────────────────────
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function neighbors4(r, c, n) {
+  const out = [];
+  if (r > 0)   out.push([r-1, c]);
+  if (r < n-1) out.push([r+1, c]);
+  if (c > 0)   out.push([r, c-1]);
+  if (c < n-1) out.push([r, c+1]);
+  return out;
+}
+
+// Are two cells adjacent (including diagonally)?
+function touching(r1, c1, r2, c2) {
+  return Math.abs(r1 - r2) <= 1 && Math.abs(c1 - c2) <= 1;
+}
+
+// ─── STAR PLACEMENT ─────────────────────────────────────────
+// Find a random valid placement: one star per row & column,
+// no two stars touching (including diagonally).
+// Returns array where result[row] = col, or null if impossible.
+function findStars(n) {
+  const cols   = [];
+  const usedC  = new Array(n).fill(false);
+
+  function bt(row) {
+    if (row === n) return true;
+    const order = shuffle(Array.from({length: n}, (_, i) => i));
+    for (const c of order) {
+      if (usedC[c]) continue;
+      // Check diagonal touch with previous row only (sufficient since one per row)
+      if (row > 0 && Math.abs(c - cols[row - 1]) <= 1) continue;
+      cols.push(c);
+      usedC[c] = true;
+      if (bt(row + 1)) return true;
+      cols.pop();
+      usedC[c] = false;
+    }
+    return false;
+  }
+
+  return bt(0) ? cols : null;
+}
+
+// ─── SOLUTION COUNTER (fully-assigned grid) ─────────────────
+// Counts valid star placements up to max. All cells must be assigned.
+function countSol(rg, n, max) {
+  var count = 0;
+  var usedC = new Array(n).fill(false);
+  var usedR = new Array(n).fill(false);
+  var sol   = [];
+
+  function bt(row) {
+    if (count >= max) return;
+    if (row === n) { count++; return; }
+    for (var c = 0; c < n; c++) {
+      if (usedC[c]) continue;
+      if (row > 0 && Math.abs(c - sol[row - 1]) <= 1) continue;
+      var reg = rg[row][c];
+      if (usedR[reg]) continue;
+      usedC[c] = true; usedR[reg] = true; sol.push(c);
+      bt(row + 1);
+      sol.pop(); usedC[c] = false; usedR[reg] = false;
+    }
+  }
+
+  bt(0);
+  return count;
+}
+
+// ─── FAST BLOCKED CHECK ──────────────────────────────────────
+// O(n): returns true if this solution is impossible under current rg
+// (i.e. two stars share the same region).
+function isSolBlocked(rg, n, sol) {
+  var usedR = new Array(n).fill(false);
+  for (var r = 0; r < n; r++) {
+    var reg = rg[r][sol[r]];
+    if (usedR[reg]) return true;
+    usedR[reg] = true;
+  }
+  return false;
+}
+
+// ─── MULTI-SOLUTION FINDER ───────────────────────────────────
+// Collects up to k solutions from a fully-assigned rg.
+function findSols(rg, n, k) {
+  var solutions = [], usedC = new Array(n).fill(false),
+      usedR = new Array(n).fill(false), sol = [];
+
+  function bt(row) {
+    if (solutions.length >= k) return;
+    if (row === n) { solutions.push(sol.slice()); return; }
+    for (var c = 0; c < n; c++) {
+      if (usedC[c]) continue;
+      if (row > 0 && Math.abs(c - sol[row - 1]) <= 1) continue;
+      var reg = rg[row][c];
+      if (usedR[reg]) continue;
+      usedC[c] = true; usedR[reg] = true; sol.push(c);
+      bt(row + 1);
+      sol.pop(); usedC[c] = false; usedR[reg] = false;
+    }
+  }
+
+  bt(0);
+  return solutions;
+}
+
+// ─── GREEDY BFS REGION BUILDER ───────────────────────────────
+// Grows regions outward from star seeds via random BFS.
+// Produces a fully-assigned grid quickly (usually count=2 for large n).
+function buildRG(n, starCols) {
+  var rg = [];
+  for (var r = 0; r < n; r++) rg.push(new Array(n).fill(-1));
+  for (var r = 0; r < n; r++) rg[r][starCols[r]] = r;
+
+  var inFrontier = [];
+  for (var r = 0; r < n; r++) inFrontier.push(new Array(n).fill(false));
+  var frontier = [];
+
+  function addFrontier(r, c) {
+    var nb = neighbors4(r, c, n);
+    for (var k = 0; k < nb.length; k++) {
+      var nr = nb[k][0], nc = nb[k][1];
+      if (rg[nr][nc] < 0 && !inFrontier[nr][nc]) {
+        inFrontier[nr][nc] = true;
+        frontier.push([nr, nc]);
+      }
+    }
+  }
+
+  for (var r = 0; r < n; r++) addFrontier(r, starCols[r]);
+
+  var fi = 0;
+  while (fi < frontier.length) {
+    var ri = fi + Math.floor(Math.random() * (frontier.length - fi));
+    var tmp = frontier[fi]; frontier[fi] = frontier[ri]; frontier[ri] = tmp;
+    var cell = frontier[fi++];
+    var r = cell[0], c = cell[1];
+    if (rg[r][c] >= 0) continue;
+
+    var adjRegs = [];
+    var nb = neighbors4(r, c, n);
+    for (var k = 0; k < nb.length; k++) {
+      var reg = rg[nb[k][0]][nb[k][1]];
+      if (reg >= 0) {
+        var dup = false;
+        for (var i = 0; i < adjRegs.length; i++) if (adjRegs[i] === reg) { dup = true; break; }
+        if (!dup) adjRegs.push(reg);
+      }
+    }
+    if (adjRegs.length === 0) { fi--; continue; }
+
+    rg[r][c] = adjRegs[Math.floor(Math.random() * adjRegs.length)];
+    addFrontier(r, c);
+  }
+
+  for (var r = 0; r < n; r++)
+    for (var c = 0; c < n; c++)
+      if (rg[r][c] < 0) return null;
+
+  return rg;
+}
+
+// ─── UNIQUENESS FIX (connectivity-preserving hill-climbing) ──
+// Flips border cells between adjacent regions to block alternative
+// solutions. Only moves that keep BOTH affected regions connected
+// are considered, so the resulting grid always has contiguous regions.
+function optimizedFix(rg, n, starCols) {
+  var allSols = findSols(rg, n, 30);
+  var alts = allSols.filter(function(s) {
+    return s.some(function(c, r) { return c !== starCols[r]; });
+  });
+  if (alts.length === 0) return countSol(rg, n, 2) === 1;
+
+  for (var pass = 0; pass < 5; pass++) {
+    for (var iter = 0; iter < 200; iter++) {
+      if (alts.length === 0) break;
+
+      // Candidate cells: positions where any alt places its star
+      // (these are cells whose region assignment affects alternatives)
+      var moveCells = new Map();
+      for (var ai = 0; ai < alts.length; ai++) {
+        var a = alts[ai];
+        for (var r = 0; r < n; r++) {
+          if (a[r] === starCols[r]) continue;
+          var key = r * n + a[r];
+          if (!moveCells.has(key)) moveCells.set(key, [r, a[r]]);
+        }
+      }
+
+      var bestMove = null, bestBlocked = -1;
+      moveCells.forEach(function(cell) {
+        var r = cell[0], c = cell[1];
+        var oldReg = rg[r][c];
+        var nb = neighbors4(r, c, n);
+
+        // Identify same-region neighbors and adjacent (different) regions
+        var sameNbs = [];
+        var adjRegSet = new Set();
+        for (var k = 0; k < nb.length; k++) {
+          var nreg = rg[nb[k][0]][nb[k][1]];
+          if (nreg === oldReg) sameNbs.push(nb[k]);
+          else adjRegSet.add(nreg);
+        }
+
+        // Connectivity check: removing (r,c) from oldReg must not disconnect it.
+        // If (r,c) has ≤1 same-region neighbor it's a leaf — always safe.
+        // If it has 2+ neighbors, verify all are still mutually reachable without (r,c).
+        if (sameNbs.length > 1) {
+          var vis = new Set();
+          var q = [sameNbs[0]];
+          vis.add(sameNbs[0][0] * n + sameNbs[0][1]);
+          while (q.length > 0) {
+            var cur = q.shift();
+            var cnb = neighbors4(cur[0], cur[1], n);
+            for (var k = 0; k < cnb.length; k++) {
+              var br = cnb[k][0], bc = cnb[k][1];
+              var vk = br * n + bc;
+              if (!vis.has(vk) && rg[br][bc] === oldReg && (br !== r || bc !== c)) {
+                vis.add(vk);
+                q.push([br, bc]);
+              }
+            }
+          }
+          var disconnects = false;
+          for (var k = 1; k < sameNbs.length; k++)
+            if (!vis.has(sameNbs[k][0] * n + sameNbs[k][1])) { disconnects = true; break; }
+          if (disconnects) return; // skip — would break source region connectivity
+        }
+
+        // Only allow reassignment to an adjacent region (keeps target region connected)
+        adjRegSet.forEach(function(reg) {
+          rg[r][c] = reg;
+          var blocked = 0;
+          for (var ai2 = 0; ai2 < alts.length; ai2++)
+            if (isSolBlocked(rg, n, alts[ai2])) blocked++;
+          if (blocked > bestBlocked) {
+            bestBlocked = blocked;
+            bestMove = [r, c, oldReg, reg];
+          }
+          rg[r][c] = oldReg;
+        });
+      });
+
+      if (!bestMove || bestBlocked === 0) break;
+      rg[bestMove[0]][bestMove[1]] = bestMove[3];
+      alts = alts.filter(function(a) { return !isSolBlocked(rg, n, a); });
+    }
+
+    var cnt = countSol(rg, n, 2);
+    if (cnt === 1) return true;
+    if (cnt === 0) return false;
+
+    // Refresh tracked alternatives
+    var newSols = findSols(rg, n, 15).filter(function(s) {
+      return s.some(function(c, r) { return c !== starCols[r]; });
+    });
+    if (newSols.length === 0) return true;
+    alts = newSols;
+  }
+
+  return countSol(rg, n, 2) === 1;
+}
+
+// ─── PUZZLE GENERATION ──────────────────────────────────────
+// BFS to build initial region grid, then hill-climb to uniqueness.
+function generatePuzzle(n) {
+  for (var attempt = 0; attempt < 500; attempt++) {
+    var starCols = findStars(n);
+    if (!starCols) continue;
+    var rg = buildRG(n, starCols);
+    if (!rg) continue;
+    if (countSol(rg, n, 2) === 1 || optimizedFix(rg, n, starCols))
+      return { regionGrid: rg, solution: starCols };
+  }
+  return null;
+}
+
+// ─── FIND A SOLUTION (for Solve button) ─────────────────────
+// Returns array where result[row] = col, or null.
+function findSolution(regionGrid, n) {
+  const sol      = [];
+  const usedC    = new Array(n).fill(false);
+  const usedR    = new Array(n).fill(false); // usedR[regionId]
+
+  function bt(row) {
+    if (row === n) return true;
+    for (let c = 0; c < n; c++) {
+      if (usedC[c]) continue;
+      if (row > 0 && Math.abs(c - sol[row - 1]) <= 1) continue; // no touching
+      const reg = regionGrid[row][c];
+      if (usedR[reg]) continue;
+      usedC[c] = true;
+      usedR[reg] = true;
+      sol.push(c);
+      if (bt(row + 1)) return true;
+      usedC[c] = false;
+      usedR[reg] = false;
+      sol.pop();
+    }
+    return false;
+  }
+
+  return bt(0) ? sol : null;
+}
+
+// ─── GAME STATE ─────────────────────────────────────────────
+const G = {
+  n:          10,
+  regionGrid: null,   // [n][n] → regionId
+  regionCells:null,   // [n] → list of [r,c]
+  cellState:  null,   // [n][n] → 0=empty 1=dot 2=star
+  solution:   null,   // solution[row] = col  (from generation)
+  won:        false,
+};
+
+function buildRegionCells(regionGrid, n) {
+  const rc = Array.from({length: n}, () => []);
+  for (let r = 0; r < n; r++)
+    for (let c = 0; c < n; c++)
+      rc[regionGrid[r][c]].push([r, c]);
+  return rc;
+}
+
+// ─── AUTO-DOTS ──────────────────────────────────────────────
+// Returns a Set of "r,c" strings that should show a faint dot.
+function computeAutoDots() {
+  const { n, regionGrid, regionCells, cellState } = G;
+  const blocked = new Set();
+
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      if (cellState[r][c] !== 2) continue;
+      const reg = regionGrid[r][c];
+
+      // Same row
+      for (let cc = 0; cc < n; cc++) if (cc !== c) blocked.add(`${r},${cc}`);
+      // Same column
+      for (let rr = 0; rr < n; rr++) if (rr !== r) blocked.add(`${rr},${c}`);
+      // Same region
+      for (const [rr, cc] of regionCells[reg])
+        if (rr !== r || cc !== c) blocked.add(`${rr},${cc}`);
+      // Touching cells (diagonal + orthogonal)
+      for (let dr = -1; dr <= 1; dr++)
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const nr = r + dr, nc = c + dc;
+          if (nr >= 0 && nr < n && nc >= 0 && nc < n) blocked.add(`${nr},${nc}`);
+        }
+    }
+  }
+  return blocked;
+}
+
+// ─── CONFLICT DETECTION ─────────────────────────────────────
+// Returns Set of "r,c" strings of stars that violate a rule.
+function computeConflicts() {
+  const { n, regionGrid, cellState } = G;
+  const rowCnt = new Array(n).fill(0);
+  const colCnt = new Array(n).fill(0);
+  const regCnt = new Array(n).fill(0);
+  const stars  = [];
+
+  for (let r = 0; r < n; r++)
+    for (let c = 0; c < n; c++)
+      if (cellState[r][c] === 2) {
+        rowCnt[r]++;
+        colCnt[c]++;
+        regCnt[regionGrid[r][c]]++;
+        stars.push([r, c]);
+      }
+
+  const cf = new Set();
+  for (const [r, c] of stars) {
+    if (rowCnt[r] > 1 || colCnt[c] > 1 || regCnt[regionGrid[r][c]] > 1)
+      cf.add(`${r},${c}`);
+    // Touching another star?
+    for (const [r2, c2] of stars)
+      if ((r !== r2 || c !== c2) && touching(r, c, r2, c2))
+        cf.add(`${r},${c}`);
+  }
+  return cf;
+}
+
+// ─── WIN CHECK ──────────────────────────────────────────────
+function checkWin() {
+  const { n, regionGrid, cellState } = G;
+  const rowCnt = new Array(n).fill(0);
+  const colCnt = new Array(n).fill(0);
+  const regCnt = new Array(n).fill(0);
+  const stars  = [];
+
+  for (let r = 0; r < n; r++)
+    for (let c = 0; c < n; c++)
+      if (cellState[r][c] === 2) {
+        rowCnt[r]++;
+        colCnt[c]++;
+        regCnt[regionGrid[r][c]]++;
+        stars.push([r, c]);
+      }
+
+  if (stars.length !== n) return false;
+  for (let i = 0; i < n; i++)
+    if (rowCnt[i] !== 1 || colCnt[i] !== 1 || regCnt[i] !== 1) return false;
+  for (let i = 0; i < stars.length; i++)
+    for (let j = i + 1; j < stars.length; j++)
+      if (touching(...stars[i], ...stars[j])) return false;
+  return true;
+}
+
+// ─── RENDERING ──────────────────────────────────────────────
+let cellEls = [];
+
+function cellPx(n) {
+  const maxW = Math.min(window.innerWidth - 32, 600);
+  const maxH = window.innerHeight - 260;
+  return Math.max(28, Math.floor(Math.min(maxW, maxH) / n));
+}
+
+function buildGrid() {
+  const { n } = G;
+  const sz = cellPx(n);
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  grid.style.gridTemplateColumns = `repeat(${n}, ${sz}px)`;
+  grid.style.gridTemplateRows    = `repeat(${n}, ${sz}px)`;
+  cellEls = [];
+
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      const el = document.createElement('div');
+      el.className = 'cell';
+      el.style.width  = sz + 'px';
+      el.style.height = sz + 'px';
+      const rr = r, cc = c;
+      el.addEventListener('click', () => handleClick(rr, cc));
+      grid.appendChild(el);
+      cellEls.push(el);
+    }
+  }
+}
+
+function renderGrid() {
+  const { n, regionGrid, cellState } = G;
+  const sz       = cellPx(n);
+  const autoDots = computeAutoDots();
+  const conflicts= computeConflicts();
+
+  const thick = Math.max(3, Math.ceil(sz / 15));
+  const thin  = 1;
+  const tClr  = 'rgba(0,0,0,0.55)';
+  const nClr  = 'rgba(0,0,0,0.18)';
+
+  const starSz = Math.round(sz * 0.52);
+  const dotSz  = Math.round(sz * 0.26);
+  const adotSz = Math.round(sz * 0.14);
+
+  // Update grid column/row sizes if n changed
+  const grid = document.getElementById('grid');
+  grid.style.gridTemplateColumns = `repeat(${n}, ${sz}px)`;
+  grid.style.gridTemplateRows    = `repeat(${n}, ${sz}px)`;
+
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      const el  = cellEls[r * n + c];
+      const cs  = cellState[r][c];
+      const reg = regionGrid[r][c];
+      const key = `${r},${c}`;
+
+      el.style.width           = sz + 'px';
+      el.style.height          = sz + 'px';
+      el.style.backgroundColor = COLORS[reg % COLORS.length];
+
+      // Region borders
+      const bT = (r === 0   || regionGrid[r][c] !== regionGrid[r-1][c]) ? `${thick}px solid ${tClr}` : `${thin}px solid ${nClr}`;
+      const bB = (r === n-1 || regionGrid[r][c] !== regionGrid[r+1][c]) ? `${thick}px solid ${tClr}` : `${thin}px solid ${nClr}`;
+      const bL = (c === 0   || regionGrid[r][c] !== regionGrid[r][c-1]) ? `${thick}px solid ${tClr}` : `${thin}px solid ${nClr}`;
+      const bR = (c === n-1 || regionGrid[r][c] !== regionGrid[r][c+1]) ? `${thick}px solid ${tClr}` : `${thin}px solid ${nClr}`;
+      el.style.borderTop    = bT;
+      el.style.borderBottom = bB;
+      el.style.borderLeft   = bL;
+      el.style.borderRight  = bR;
+
+      // Conflict ring
+      el.classList.toggle('conflict', cs === 2 && conflicts.has(key));
+
+      // Content
+      if (cs === 2) {
+        el.innerHTML = `<span style="font-size:${starSz}px;line-height:1;color:#1e293b;">★</span>`;
+      } else if (cs === 1) {
+        el.innerHTML = `<div style="width:${dotSz}px;height:${dotSz}px;border-radius:50%;background:rgba(0,0,0,0.45);"></div>`;
+      } else if (autoDots.has(key)) {
+        el.innerHTML = `<div style="width:${adotSz}px;height:${adotSz}px;border-radius:50%;background:rgba(0,0,0,0.2);"></div>`;
+      } else {
+        el.innerHTML = '';
+      }
+    }
+  }
+}
+
+// ─── CLICK HANDLER ──────────────────────────────────────────
+function handleClick(r, c) {
+  if (G.won) return;
+  const cs = G.cellState[r][c];
+  G.cellState[r][c] = cs === 0 ? 1 : cs === 1 ? 2 : 0;
+  renderGrid();
+
+  if (checkWin()) {
+    G.won = true;
+    setStatus('Puzzle solved! 🎉', 'win');
+    setTimeout(() => document.getElementById('win-overlay').classList.add('show'), 300);
+  } else {
+    let stars = 0;
+    for (let rr = 0; rr < G.n; rr++)
+      for (let cc = 0; cc < G.n; cc++)
+        if (G.cellState[rr][cc] === 2) stars++;
+    setStatus(stars === 0 ? 'Tap once to mark · twice for a star' : `${stars} / ${G.n} stars placed`);
+  }
+}
+
+// ─── GAME FLOW ──────────────────────────────────────────────
+function setStatus(msg, cls) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = cls || '';
+}
+
+function startGame(n) {
+  G.n   = n;
+  G.won = false;
+  document.getElementById('win-overlay').classList.remove('show');
+  setStatus('Generating…');
+
+  // Use setTimeout so the status message renders before the blocking BFS
+  setTimeout(function() {
+    var result = generatePuzzle(n);
+
+    if (!result) {
+      setStatus('Grid size too small for this puzzle (try 6×6 or larger).', 'err');
+      return;
+    }
+
+    G.regionGrid  = result.regionGrid;
+    G.solution    = result.solution;
+    G.regionCells = buildRegionCells(result.regionGrid, n);
+    G.cellState   = [];
+    for (var r = 0; r < n; r++) {
+      G.cellState.push(new Array(n).fill(0));
+    }
+
+    buildGrid();
+    renderGrid();
+    setStatus('Tap once to mark · twice for a star');
+  }, 10);
+}
+
+function showSolution() {
+  if (!G.regionGrid) return;
+  var sol = findSolution(G.regionGrid, G.n);
+  if (!sol) { setStatus('No solution found.', 'err'); return; }
+  G.won = false;
+  for (var r = 0; r < G.n; r++)
+    for (var c = 0; c < G.n; c++)
+      G.cellState[r][c] = 0;
+  for (var row = 0; row < G.n; row++)
+    G.cellState[row][sol[row]] = 2;
+  renderGrid();
+  setStatus('Solution shown — start a new game to play.');
+}
+
+// ─── EVENT LISTENERS ────────────────────────────────────────
+document.getElementById('btn-new').addEventListener('click', function() {
+  startGame(parseInt(document.getElementById('size-sel').value, 10));
+});
+
+document.getElementById('btn-reset').addEventListener('click', function() {
+  if (!G.regionGrid) return;
+  G.won = false;
+  for (var r = 0; r < G.n; r++)
+    for (var c = 0; c < G.n; c++)
+      G.cellState[r][c] = 0;
+  renderGrid();
+  setStatus('Tap once to mark · twice for a star');
+});
+
+document.getElementById('btn-solve').addEventListener('click', showSolution);
+
+document.getElementById('btn-next').addEventListener('click', function() {
+  startGame(parseInt(document.getElementById('size-sel').value, 10));
+});
+
+document.getElementById('size-sel').addEventListener('change', function() {
+  startGame(parseInt(this.value, 10));
+});
+
+window.addEventListener('resize', function() {
+  if (G.regionGrid && cellEls.length) renderGrid();
+});
+
+// ─── INIT ───────────────────────────────────────────────────
+startGame(10);
+</script>
+</body>
+</html>
