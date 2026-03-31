@@ -462,6 +462,47 @@ function optimizedFix(rg, n, starCols, requireConnected) {
   return countSol(rg, n, 2) === 1;
 }
 
+// ─── CONNECTIVITY REPAIR ─────────────────────────────────────
+// After optimizedFix runs without connectivity constraints, some regions may
+// have become disconnected (two 4-separate blobs of the same colour).
+// This repairs them by reassigning orphaned cells to an orthogonally adjacent
+// region, iterating until every region is a single 4-connected component.
+// Star cells (rg[reg][starCols[reg]] === reg) are anchors and never reassigned.
+function fixConnectivity(rg, n, starCols) {
+  var changed = true;
+  while (changed) {
+    changed = false;
+    for (var reg = 0; reg < n; reg++) {
+      // BFS from the star cell to discover the main component
+      var visited = new Set();
+      var q = [[reg, starCols[reg]]];
+      visited.add(reg * n + starCols[reg]);
+      while (q.length > 0) {
+        var cur = q.shift();
+        var nb = neighbors4(cur[0], cur[1], n);
+        for (var k = 0; k < nb.length; k++) {
+          var nr = nb[k][0], nc = nb[k][1], key = nr * n + nc;
+          if (!visited.has(key) && rg[nr][nc] === reg) {
+            visited.add(key);
+            q.push([nr, nc]);
+          }
+        }
+      }
+      // Reassign any cell not reachable from the star
+      for (var r = 0; r < n; r++) {
+        for (var c = 0; c < n; c++) {
+          if (rg[r][c] !== reg || visited.has(r * n + c)) continue;
+          var nb2 = neighbors4(r, c, n);
+          for (var j = 0; j < nb2.length; j++) {
+            var nreg = rg[nb2[j][0]][nb2[j][1]];
+            if (nreg !== reg) { rg[r][c] = nreg; changed = true; break; }
+          }
+        }
+      }
+    }
+  }
+}
+
 // ─── PUZZLE GENERATION ──────────────────────────────────────
 // Async: calls onDone({ regionGrid, solution }) on success, onDone(null) on failure.
 function generatePuzzle(n, onDone) {
@@ -478,6 +519,10 @@ function generatePuzzle(n, onDone) {
       var rg = buildRG(n, starCols);
       if (!rg) continue;
       if (countSol(rg, n, 2) === 1 || optimizedFix(rg, n, starCols, requireConnected)) {
+        if (!requireConnected) {
+          fixConnectivity(rg, n, starCols);
+          if (countSol(rg, n, 2) !== 1) continue; // repair changed uniqueness, retry
+        }
         onDone({ regionGrid: rg, solution: starCols });
         return;
       }
