@@ -142,6 +142,47 @@
       cursor: pointer;
     }
     #btn-next:hover { background: #2563eb; }
+
+    /* info bar — timer + dot counter */
+    #info-bar {
+      display: flex;
+      gap: 24px;
+      font-size: 0.85rem;
+      color: #64748b;
+    }
+    #info-bar span { min-width: 90px; text-align: center; }
+
+    /* undo button */
+    #btn-undo { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+    #btn-undo:hover:not(:disabled) { background: #273548; }
+    #btn-undo:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    /* shape + code UI */
+    #shape-sel { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; }
+
+    #code-area {
+      display: flex; gap: 8px; align-items: center;
+      flex-wrap: wrap; justify-content: center;
+    }
+    #code-input {
+      padding: 6px 10px; font-size: 0.75rem; font-family: monospace;
+      background: #0f172a; color: #94a3b8;
+      border: 1px solid #334155; border-radius: 6px; width: 220px;
+    }
+    #btn-share, #btn-load {
+      background: #1e293b; color: #94a3b8; border: 1px solid #334155;
+    }
+    #btn-share:hover, #btn-load:hover { background: #273548; }
+
+    /* win overlay extras */
+    #win-stats { color: #64748b; margin-bottom: 12px; font-size: 0.9rem; }
+    #win-code {
+      font-size: 0.62rem; font-family: monospace; color: #475569;
+      word-break: break-all; max-width: 300px; margin: 0 auto 20px;
+      cursor: pointer; padding: 8px; background: #0f172a; border-radius: 6px;
+    }
+    #win-code:hover { color: #94a3b8; }
+    #copy-hint { font-size: 0.7rem; color: #22c55e; min-height: 16px; margin-bottom: 8px; }
   </style>
 </head>
 <body>
@@ -150,6 +191,11 @@
 <div class="sub">One star per row · column · region · no two stars touching</div>
 
 <div id="status">Loading…</div>
+
+<div id="info-bar">
+  <span id="timer">⏱ 0:00</span>
+  <span id="dot-count">· 0 dots</span>
+</div>
 
 <div id="grid"></div>
 
@@ -160,19 +206,35 @@
     <option value="10" selected>10 × 10</option>
     <option value="12">12 × 12</option>
   </select>
+  <select id="shape-sel">
+    <option value="★">★ Star</option>
+    <option value="♦">♦ Diamond</option>
+    <option value="♥">♥ Heart</option>
+    <option value="▲">▲ Triangle</option>
+    <option value="●">● Circle</option>
+  </select>
   <button id="btn-new">New Game</button>
   <button id="btn-reset">Reset</button>
+  <button id="btn-undo" disabled>Undo</button>
   <button id="btn-solve">Solve</button>
 </div>
 
+<div id="code-area">
+  <button id="btn-share">Share Puzzle</button>
+  <input id="code-input" type="text" placeholder="Paste puzzle code…" spellcheck="false">
+  <button id="btn-load">Load</button>
+</div>
+
 <div class="legend">
-  Tap once → mark &nbsp;|&nbsp; Tap again → star &nbsp;|&nbsp; Tap again → clear
+  Tap once → mark &nbsp;|&nbsp; Tap again → place symbol &nbsp;|&nbsp; Tap again → clear
 </div>
 
 <div id="win-overlay">
   <div id="win-box">
     <h2>🎉 Solved!</h2>
-    <p>All stars placed correctly.</p>
+    <div id="win-stats"></div>
+    <div id="copy-hint"></div>
+    <div id="win-code" title="Click to copy"></div>
     <button id="btn-next">Next Puzzle</button>
   </div>
 </div>
@@ -571,6 +633,10 @@ const G = {
   cellState:  null,   // [n][n] → 0=empty 1=dot 2=star
   solution:   null,   // solution[row] = col  (from generation)
   won:        false,
+  history:    [],     // stack of cellState snapshots for undo
+  timerStart: null,   // Date.now() when first move made
+  timerInterval: null,
+  symbol:     '★',   // shape shown for state=2
 };
 
 function buildRegionCells(regionGrid, n) {
@@ -712,7 +778,7 @@ function renderGrid() {
 
   const starSz = Math.round(sz * 0.52);
   const dotSz  = Math.round(sz * 0.26);
-  const adotSz = Math.round(sz * 0.14);
+  const adotSz = Math.round(sz * 0.22);
 
   // Update grid column/row sizes if n changed
   const grid = document.getElementById('grid');
@@ -745,11 +811,11 @@ function renderGrid() {
 
       // Content
       if (cs === 2) {
-        el.innerHTML = `<span style="font-size:${starSz}px;line-height:1;color:#1e293b;">★</span>`;
+        el.innerHTML = `<span style="font-size:${starSz}px;line-height:1;color:#1e293b;">${G.symbol}</span>`;
       } else if (cs === 1) {
         el.innerHTML = `<div style="width:${dotSz}px;height:${dotSz}px;border-radius:50%;background:rgba(0,0,0,0.45);"></div>`;
       } else if (autoDots.has(key)) {
-        el.innerHTML = `<div style="width:${adotSz}px;height:${adotSz}px;border-radius:50%;background:rgba(0,0,0,0.2);"></div>`;
+        el.innerHTML = `<div style="width:${adotSz}px;height:${adotSz}px;border-radius:50%;background:rgba(0,0,0,0.32);"></div>`;
       } else {
         el.innerHTML = '';
       }
@@ -757,15 +823,103 @@ function renderGrid() {
   }
 }
 
+// ─── TIMER ──────────────────────────────────────────────────
+function formatTime(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function startTimer() {
+  if (G.timerStart !== null) return;
+  G.timerStart = Date.now();
+  G.timerInterval = setInterval(function() {
+    document.getElementById('timer').textContent = '⏱ ' + formatTime(Date.now() - G.timerStart);
+  }, 1000);
+}
+
+function stopTimer() {
+  clearInterval(G.timerInterval);
+  G.timerInterval = null;
+}
+
+function updateDotCount() {
+  let dots = 0;
+  for (let r = 0; r < G.n; r++)
+    for (let c = 0; c < G.n; c++)
+      if (G.cellState[r][c] === 1) dots++;
+  document.getElementById('dot-count').textContent = `· ${dots} dot${dots !== 1 ? 's' : ''}`;
+}
+
+// ─── PUZZLE CODE ─────────────────────────────────────────────
+function encodePuzzle() {
+  const { regionGrid, solution, n } = G;
+  if (!regionGrid) return '';
+  // Pack n×n region IDs (0–15) as nibbles, then n solution values
+  const nibbles = [];
+  for (let r = 0; r < n; r++)
+    for (let c = 0; c < n; c++)
+      nibbles.push(regionGrid[r][c]);
+  for (let r = 0; r < n; r++)
+    nibbles.push(solution[r]);
+  // nibbles → bytes
+  const bytes = [];
+  for (let i = 0; i < nibbles.length; i += 2)
+    bytes.push(((nibbles[i] & 0xF) << 4) | (nibbles[i + 1] & 0xF));
+  return n + ':' + btoa(String.fromCharCode(...bytes));
+}
+
+function decodePuzzle(code) {
+  try {
+    const colon = code.indexOf(':');
+    const n = parseInt(code.slice(0, colon), 10);
+    if (![6, 8, 10, 12].includes(n)) return null;
+    const bytes = atob(code.slice(colon + 1)).split('').map(c => c.charCodeAt(0));
+    const nibbles = [];
+    for (const b of bytes) { nibbles.push((b >> 4) & 0xF); nibbles.push(b & 0xF); }
+    const total = n * n + n;
+    if (nibbles.length < total) return null;
+    const regionGrid = [];
+    for (let r = 0; r < n; r++) {
+      regionGrid.push([]);
+      for (let c = 0; c < n; c++)
+        regionGrid[r].push(nibbles[r * n + c]);
+    }
+    const solution = [];
+    for (let r = 0; r < n; r++)
+      solution.push(nibbles[n * n + r]);
+    return { n, regionGrid, solution };
+  } catch(e) { return null; }
+}
+
 // ─── CLICK HANDLER ──────────────────────────────────────────
 function handleClick(r, c) {
   if (G.won) return;
+  // Save snapshot for undo
+  G.history.push(G.cellState.map(row => row.slice()));
+  document.getElementById('btn-undo').disabled = false;
+
+  // Start timer on first interaction
+  startTimer();
+
   const cs = G.cellState[r][c];
   G.cellState[r][c] = cs === 0 ? 1 : cs === 1 ? 2 : 0;
   renderGrid();
+  updateDotCount();
 
   if (checkWin()) {
     G.won = true;
+    stopTimer();
+    const elapsed = G.timerStart ? formatTime(Date.now() - G.timerStart) : '—';
+    let dots = 0;
+    for (let rr = 0; rr < G.n; rr++)
+      for (let cc = 0; cc < G.n; cc++)
+        if (G.cellState[rr][cc] === 1) dots++;
+    const code = encodePuzzle();
+    document.getElementById('win-stats').textContent = `Time: ${elapsed}  ·  ${dots} dot${dots !== 1 ? 's' : ''} placed`;
+    const winCode = document.getElementById('win-code');
+    winCode.textContent = code;
+    winCode.title = 'Click to copy';
+    document.getElementById('copy-hint').textContent = '';
     setStatus('Puzzle solved! 🎉', 'win');
     setTimeout(() => document.getElementById('win-overlay').classList.add('show'), 300);
   } else {
@@ -773,7 +927,7 @@ function handleClick(r, c) {
     for (let rr = 0; rr < G.n; rr++)
       for (let cc = 0; cc < G.n; cc++)
         if (G.cellState[rr][cc] === 2) stars++;
-    setStatus(stars === 0 ? 'Tap once to mark · twice for a star' : `${stars} / ${G.n} stars placed`);
+    setStatus(stars === 0 ? 'Tap once to mark · twice for a symbol' : `${stars} / ${G.n} placed`);
   }
 }
 
@@ -784,30 +938,42 @@ function setStatus(msg, cls) {
   el.className = cls || '';
 }
 
-function startGame(n) {
+function startGame(n, preloaded) {
   G.n   = n;
   G.won = false;
+  G.history = [];
+  stopTimer();
+  G.timerStart = null;
+  document.getElementById('timer').textContent = '⏱ 0:00';
+  document.getElementById('dot-count').textContent = '· 0 dots';
+  document.getElementById('btn-undo').disabled = true;
   document.getElementById('win-overlay').classList.remove('show');
-  setStatus('Generating…');
 
-  generatePuzzle(n, function(result) {
+  function applyResult(result) {
     if (!result) {
       setStatus('Could not generate — try again.', 'err');
       return;
     }
-
     G.regionGrid  = result.regionGrid;
     G.solution    = result.solution;
     G.regionCells = buildRegionCells(result.regionGrid, n);
     G.cellState   = [];
-    for (var r = 0; r < n; r++) {
+    for (var r = 0; r < n; r++)
       G.cellState.push(new Array(n).fill(0));
-    }
-
     buildGrid();
     renderGrid();
-    setStatus('Tap once to mark · twice for a star');
-  });
+    setStatus('Tap once to mark · twice for a symbol');
+    // Sync size selector if loading from code
+    var sel = document.getElementById('size-sel');
+    if (parseInt(sel.value, 10) !== n) sel.value = String(n);
+  }
+
+  if (preloaded) {
+    applyResult(preloaded);
+  } else {
+    setStatus('Generating…');
+    generatePuzzle(n, applyResult);
+  }
 }
 
 function showSolution() {
@@ -832,14 +998,72 @@ document.getElementById('btn-new').addEventListener('click', function() {
 document.getElementById('btn-reset').addEventListener('click', function() {
   if (!G.regionGrid) return;
   G.won = false;
+  G.history = [];
+  stopTimer();
+  G.timerStart = null;
+  document.getElementById('timer').textContent = '⏱ 0:00';
+  document.getElementById('dot-count').textContent = '· 0 dots';
+  document.getElementById('btn-undo').disabled = true;
   for (var r = 0; r < G.n; r++)
     for (var c = 0; c < G.n; c++)
       G.cellState[r][c] = 0;
   renderGrid();
-  setStatus('Tap once to mark · twice for a star');
+  setStatus('Tap once to mark · twice for a symbol');
+});
+
+document.getElementById('btn-undo').addEventListener('click', function() {
+  if (!G.history.length) return;
+  G.cellState = G.history.pop();
+  if (!G.history.length) document.getElementById('btn-undo').disabled = true;
+  G.won = false;
+  renderGrid();
+  updateDotCount();
+  let stars = 0;
+  for (var r = 0; r < G.n; r++)
+    for (var c = 0; c < G.n; c++)
+      if (G.cellState[r][c] === 2) stars++;
+  setStatus(stars === 0 ? 'Tap once to mark · twice for a symbol' : `${stars} / ${G.n} placed`);
 });
 
 document.getElementById('btn-solve').addEventListener('click', showSolution);
+
+document.getElementById('shape-sel').addEventListener('change', function() {
+  G.symbol = this.value;
+  if (G.regionGrid) renderGrid();
+});
+
+document.getElementById('btn-share').addEventListener('click', function() {
+  const code = encodePuzzle();
+  if (!code) return;
+  const url = window.location.href.split('#')[0] + '#' + code;
+  window.location.hash = code;
+  navigator.clipboard.writeText(url).then(function() {
+    document.getElementById('btn-share').textContent = '✓ Link copied!';
+    setTimeout(function() {
+      document.getElementById('btn-share').textContent = 'Share Puzzle';
+    }, 2500);
+  });
+  document.getElementById('code-input').value = url;
+});
+
+document.getElementById('btn-load').addEventListener('click', function() {
+  var raw = document.getElementById('code-input').value.trim();
+  // Accept either a full URL (extract hash) or a bare code
+  var hashIdx = raw.indexOf('#');
+  var code = hashIdx >= 0 ? raw.slice(hashIdx + 1) : raw;
+  var result = decodePuzzle(decodeURIComponent(code));
+  if (!result) { setStatus('Invalid puzzle code.', 'err'); return; }
+  window.location.hash = code;
+  startGame(result.n, result);
+});
+
+document.getElementById('win-code').addEventListener('click', function() {
+  const code = this.textContent;
+  if (!code) return;
+  navigator.clipboard.writeText(code).then(function() {
+    document.getElementById('copy-hint').textContent = '✓ Code copied!';
+  });
+});
 
 document.getElementById('btn-next').addEventListener('click', function() {
   startGame(parseInt(document.getElementById('size-sel').value, 10));
@@ -854,7 +1078,15 @@ window.addEventListener('resize', function() {
 });
 
 // ─── INIT ───────────────────────────────────────────────────
-startGame(10);
+// Load from URL hash if present (e.g. index.html#10:AAAA...)
+(function() {
+  const hash = window.location.hash.slice(1);
+  if (hash) {
+    const result = decodePuzzle(decodeURIComponent(hash));
+    if (result) { startGame(result.n, result); return; }
+  }
+  startGame(10);
+})();
 </script>
 </body>
 </html>
